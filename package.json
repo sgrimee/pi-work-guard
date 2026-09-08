@@ -1,0 +1,33 @@
+{
+  "name": "pi-work-guard",
+  "version": "0.1.0",
+  "description": "Enterprise model provider policy enforcement plugin for Pi",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "npx tsx --test test/*.test.ts",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "enterprise",
+    "policy",
+    "security"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "minimatch": "^10.0.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@types/minimatch": "^5.1.2",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
