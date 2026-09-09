@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WorkspaceDetector } from "../src/detector.js";
 import type { PolicyConfig } from "../src/types.js";
 
@@ -68,7 +71,46 @@ test("WorkspaceDetector - matchesPathPattern hierarchy containment", async () =>
   const workPath3 = await detector.isWorkWorkspace("/Volumes/SecureDrive/work_client/tools/app", mockConfig);
   assert.equal(workPath3.isWork, true);
 
-  // Personal path without acme or work keywords
-  const personalPath = await detector.isWorkWorkspace("/Users/developer/dev/personal/games", mockConfig);
-  assert.equal(personalPath.isWork, false);
+  // Evaluation failures remain visibly unknown instead of being treated as personal.
+  const unavailablePath = await detector.isWorkWorkspace("/path/that/does/not/exist", mockConfig);
+  assert.equal(unavailablePath.isWork, false);
+  assert.equal(unavailablePath.classification, "unknown");
+  assert.match(unavailablePath.warning || "", /Could not evaluate/);
+});
+
+test("WorkspaceDetector - defaults readable non-work directories to personal", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "pi-personal-"));
+  try {
+    const result = await new WorkspaceDetector().isWorkWorkspace(tempDir, mockConfig);
+    assert.equal(result.classification, "personal");
+    assert.equal(result.isWork, false);
+    assert.equal(result.isGitRepo, false);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("WorkspaceDetector - does not throw on glob syntax that was invalid as a regular expression", () => {
+  const detector = new WorkspaceDetector();
+  assert.doesNotThrow(() => detector.matchesRemotePattern(
+    "https://github.com/acme-corp/sdk.git",
+    ["github.com/acme-corp/["],
+  ));
+});
+
+test("WorkspaceDetector - caches a workspace classification per policy fingerprint", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "pi-policy-cache-"));
+  try {
+    const detector = new WorkspaceDetector();
+    const personalConfig = { ...mockConfig, company: { ...mockConfig.company, localPathPatterns: [] } };
+    const workConfig = {
+      ...mockConfig,
+      company: { ...mockConfig.company, localPathPatterns: ["*pi-policy-cache-*"] },
+    };
+
+    assert.equal((await detector.isWorkWorkspace(tempDir, personalConfig)).classification, "personal");
+    assert.equal((await detector.isWorkWorkspace(tempDir, workConfig)).classification, "work");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });

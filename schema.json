@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pi-work-guard policy",
+  "type": "object",
+  "required": ["company", "workPolicy", "personalPolicy"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "company": {
+      "type": "object",
+      "required": ["name", "emailDomains", "remotePatterns"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "emailDomains": { "$ref": "#/$defs/nonEmptyStrings" },
+        "remotePatterns": { "$ref": "#/$defs/nonEmptyStrings" },
+        "localPathPatterns": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "workPolicy": {
+      "type": "object",
+      "required": ["defaultBehavior", "providers"],
+      "additionalProperties": false,
+      "properties": {
+        "defaultBehavior": { "enum": ["allow", "deny"] },
+        "fallbackModel": { "type": "string", "minLength": 1 },
+        "providers": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/providerRule" }
+        }
+      }
+    },
+    "personalPolicy": {
+      "type": "object",
+      "required": ["defaultBehavior"],
+      "additionalProperties": false,
+      "properties": {
+        "defaultBehavior": { "enum": ["allow", "deny"] }
+      }
+    }
+  },
+  "$defs": {
+    "strings": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "nonEmptyStrings": {
+      "allOf": [
+        { "$ref": "#/$defs/strings" },
+        { "minItems": 1 }
+      ]
+    },
+    "providerRule": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["allow", "deny", "require_account", "allow_if_tagged"] },
+        "allowedEmailDomains": { "$ref": "#/$defs/nonEmptyStrings" },
+        "allowedAccounts": { "$ref": "#/$defs/strings" },
+        "deniedAccounts": { "$ref": "#/$defs/strings" },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

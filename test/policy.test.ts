@@ -19,7 +19,6 @@ const config: PolicyConfig = {
       "github-copilot": {
         mode: "require_account",
         allowedEmailDomains: ["acme.corp", "acme.com"],
-        allowEnterpriseSKU: true,
       },
       "openai-codex": {
         mode: "require_account",
@@ -47,18 +46,33 @@ const config: PolicyConfig = {
   },
 };
 
-test("PolicyEngine - Personal workspace allows all providers", async () => {
-  const detector = new WorkspaceDetector();
-  const identity = new IdentityResolver();
-  const engine = new PolicyEngine(detector, identity);
+test("PolicyEngine - unknown workspace blocks provider use pending evaluation", async () => {
+  const detector = {
+    isWorkWorkspace: async () => ({
+      classification: "unknown" as const,
+      isWork: false,
+      isGitRepo: false,
+      warning: "Could not evaluate the workspace repository; workspace classification is unknown.",
+    }),
+  } as unknown as WorkspaceDetector;
+  const engine = new PolicyEngine(detector, new IdentityResolver());
 
-  const res1 = await engine.evaluate("/personal/project", "opencode", "gemini-3.7-flash", config);
-  assert.equal(res1.isWorkRepo, false);
-  assert.equal(res1.allowed, true);
+  const result = await engine.evaluate("/unavailable/project", "openrouter", "claude-3-opus", config);
+  assert.equal(result.isWorkRepo, false);
+  assert.equal(result.workspaceClassification, "unknown");
+  assert.equal(result.allowed, false);
+  assert.match(result.reason, /blocked until its classification/i);
+});
 
-  const res2 = await engine.evaluate("/personal/project", "openrouter", "claude-3-opus", config);
-  assert.equal(res2.isWorkRepo, false);
-  assert.equal(res2.allowed, true);
+test("PolicyEngine - personal workspace applies the personal policy", async () => {
+  const detector = {
+    isWorkWorkspace: async () => ({ classification: "personal" as const, isWork: false, isGitRepo: false }),
+  } as unknown as WorkspaceDetector;
+  const engine = new PolicyEngine(detector, new IdentityResolver());
+
+  const result = await engine.evaluate("/personal/project", "openrouter", "claude-3-opus", config);
+  assert.equal(result.workspaceClassification, "personal");
+  assert.equal(result.allowed, true);
 });
 
 test("PolicyEngine - Work workspace blocks denied providers (opencode, openrouter)", async () => {

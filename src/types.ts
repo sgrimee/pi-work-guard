@@ -9,8 +9,6 @@ export interface ProviderRule {
   allowedAccounts?: string[];
   /** Explicitly denied account emails or patterns (e.g. ["*@gmail.com"]) */
   deniedAccounts?: string[];
-  /** Allow if an enterprise license/SKU is detected in the token (e.g. GitHub Copilot Enterprise) */
-  allowEnterpriseSKU?: boolean;
   /** Custom explanation shown to the user when blocked */
   reason?: string;
 }
@@ -31,8 +29,6 @@ export interface WorkPolicyConfig {
   defaultBehavior: "deny" | "allow";
   /** Fallback compliant model (e.g. "github-copilot/gpt-5.4") */
   fallbackModel?: string;
-  /** Auto-switch to fallback model if an unauthorized model is selected */
-  autoSwitchToFallback?: boolean;
   /** Per-provider policy rules */
   providers: Record<string, ProviderRule>;
 }
@@ -49,32 +45,30 @@ export interface PolicyConfig {
   personalPolicy: PersonalPolicyConfig;
 }
 
+export type PolicyConfigSource = "project" | "global" | "default";
+
+export interface PolicyConfigLoadResult {
+  config: PolicyConfig;
+  source: PolicyConfigSource;
+  warnings: string[];
+}
+
 export interface IdentityInfo {
   provider: string;
   email?: string;
   username?: string;
-  isEnterpriseSKU?: boolean;
   verified: boolean;
-  source: "oauth_api" | "jwt_claim" | "token_attestation" | "config_tag" | "unknown";
+  source: "oauth_api" | "jwt_claim" | "unknown";
 }
 
 export interface PolicyCheckResult {
   isWorkRepo: boolean;
+  workspaceClassification: "work" | "personal" | "unknown";
+  workspaceWarning?: string;
   allowed: boolean;
   provider: string;
   modelId: string;
   reason: string;
   matchedRemote?: string;
   identity?: IdentityInfo;
-}
-
-export interface AttestedAccountEntry {
-  account: string;
-  tokenHash: string;
-  attestedAt: number;
-  lastSeenAt: number;
-}
-
-export interface AccountStore {
-  accounts: Record<string, AttestedAccountEntry>;
 }

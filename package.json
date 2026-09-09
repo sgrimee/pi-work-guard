@@ -1,27 +1,56 @@
 {
   "name": "pi-work-guard",
   "version": "0.1.0",
-  "description": "Enterprise model provider policy enforcement plugin for Pi",
+  "description": "Best-effort workspace and model-provider policy guard for Pi",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "examples",
+    "schema.json",
+    "README.md",
+    "PLAN.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "scripts": {
     "build": "tsc",
-    "test": "npx tsx --test test/*.test.ts",
-    "prepare": "npm run build"
+    "test": "tsx --test test/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
   },
   "keywords": [
     "pi",
     "pi-coding-agent",
     "pi-extension",
+    "pi-package",
     "enterprise",
     "policy",
     "security"
   ],
-  "author": "",
+  "author": "pi-work-guard contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sgrimee/pi-work-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sgrimee/pi-work-guard/issues"
+  },
+  "homepage": "https://github.com/sgrimee/pi-work-guard#readme",
   "license": "MIT",
   "dependencies": {
     "minimatch": "^10.0.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.85.1",

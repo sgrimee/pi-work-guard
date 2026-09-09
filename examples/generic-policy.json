@@ -1,5 +1,4 @@
 {
-  "$schema": "https://raw.githubusercontent.com/pi-coding-agent/pi-work-guard/main/schema.json",
   "company": {
     "name": "Acme Corporation",
     "emailDomains": [
@@ -16,14 +15,12 @@
   "workPolicy": {
     "defaultBehavior": "deny",
     "fallbackModel": "github-copilot/gpt-5.6-terra",
-    "autoSwitchToFallback": false,
     "providers": {
       "github-copilot": {
         "mode": "require_account",
         "allowedEmailDomains": [
           "acme.corp"
-        ],
-        "allowEnterpriseSKU": true
+        ]
       },
       "openai-codex": {
         "mode": "require_account",

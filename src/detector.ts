@@ -6,15 +6,36 @@ import type { PolicyConfig } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
+export type WorkspaceClassification = "work" | "personal" | "unknown";
+
 export interface WorkspaceDetectionResult {
+  classification: WorkspaceClassification;
   isWork: boolean;
   matchedRemote?: string;
   matchedPattern?: string;
   isGitRepo: boolean;
+  warning?: string;
+}
+
+type CachedWorkspaceResult = {
+  result: WorkspaceDetectionResult;
+  timestamp: number;
+};
+
+function errorCode(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null && "code" in error && typeof error.code === "number"
+    ? error.code
+    : undefined;
+}
+
+function errorStderr(error: unknown): string {
+  return typeof error === "object" && error !== null && "stderr" in error && typeof error.stderr === "string"
+    ? error.stderr
+    : "";
 }
 
 export class WorkspaceDetector {
-  private cache = new Map<string, { result: WorkspaceDetectionResult; timestamp: number }>();
+  private cache = new Map<string, CachedWorkspaceResult>();
   private readonly ttlMs: number;
 
   constructor(ttlMs = 15_000) {
@@ -26,11 +47,8 @@ export class WorkspaceDetector {
    */
   public normalizeRemoteUrl(url: string): string {
     let clean = url.trim().toLowerCase();
-    // Strip trailing .git
     clean = clean.replace(/\.git$/, "");
-    // Strip protocol prefixes: https://, http://, ssh://, git://
     clean = clean.replace(/^(https?|ssh|git):\/\//, "");
-    // Convert SSH git@host:org/repo to host/org/repo
     clean = clean.replace(/^git@([^:]+):/, "$1/");
     return clean;
   }
@@ -45,7 +63,6 @@ export class WorkspaceDetector {
     const resolvedCwd = normalizedCwd.replace(home, "~");
     const normalizedPattern = pattern.trim().toLowerCase();
 
-    // 1. Direct glob matching
     if (
       minimatch(normalizedCwd, normalizedPattern, { dot: true, nocase: true }) ||
       minimatch(resolvedCwd, normalizedPattern, { dot: true, nocase: true }) ||
@@ -54,7 +71,6 @@ export class WorkspaceDetector {
       return true;
     }
 
-    // 2. Path hierarchy segment matching (e.g. "company" or "*company*" matches any folder segment containing "company")
     const keyword = normalizedPattern.replace(/^\*+|\*+$/g, "");
     if (keyword.length > 0) {
       const segments = normalizedCwd.split(/[\\/]/).filter(Boolean);
@@ -68,17 +84,13 @@ export class WorkspaceDetector {
     return false;
   }
 
-  /**
-   * Matches a git remote URL against configured glob/substring patterns.
-   */
+  /** Matches a git remote URL against configured glob/substring patterns. */
   public matchesRemotePattern(remoteUrl: string, patterns: string[]): string | undefined {
     const raw = remoteUrl.trim().toLowerCase();
     const normalized = this.normalizeRemoteUrl(remoteUrl);
 
     for (const pattern of patterns) {
       const normalizedPattern = pattern.trim().toLowerCase();
-
-      // 1. Direct glob matching via minimatch against raw and normalized
       if (
         minimatch(raw, normalizedPattern, { dot: true, nocase: true }) ||
         minimatch(normalized, normalizedPattern, { dot: true, nocase: true })
@@ -86,58 +98,83 @@ export class WorkspaceDetector {
         return pattern;
       }
 
-      // 2. Substring matching for stripped wildcards (e.g. "*company.com*" -> "company.com")
       const stripped = normalizedPattern.replace(/^\*+|\*+$/g, "");
       if (stripped && (raw.includes(stripped) || normalized.includes(stripped))) {
         return pattern;
-      }
-
-      // 3. GitHub / GitLab organization matching (e.g. "github.com/org/*")
-      if (normalizedPattern.includes("/")) {
-        const regexPattern = normalizedPattern
-          .replace(/\./g, "\\.")
-          .replace(/\*/g, ".*");
-        if (new RegExp(regexPattern, "i").test(normalized) || new RegExp(regexPattern, "i").test(raw)) {
-          return pattern;
-        }
       }
     }
     return undefined;
   }
 
-  /**
-   * Determines if a workspace directory is a corporate work workspace.
-   */
+  private cacheKey(cwd: string, config: PolicyConfig): string {
+    return JSON.stringify({
+      cwd,
+      remotePatterns: config.company.remotePatterns,
+      localPathPatterns: config.company.localPathPatterns ?? [],
+    });
+  }
+
+  private async isGitRepository(cwd: string): Promise<boolean> {
+    try {
+      const { stdout } = await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], {
+        cwd,
+        timeout: 2_000,
+      });
+      return stdout.trim() === "true";
+    } catch (error) {
+      // Git uses exit code 128 for a readable directory that is not a repository.
+      // Other code-128 failures (for example, a corrupt or unreadable repository) are evaluation errors.
+      if (errorCode(error) === 128 && /not a git repository/i.test(errorStderr(error))) return false;
+      throw error;
+    }
+  }
+
+  private cacheResult(key: string, result: WorkspaceDetectionResult): WorkspaceDetectionResult {
+    this.cache.set(key, { result, timestamp: Date.now() });
+    return result;
+  }
+
+  /** Determines if a workspace directory is a corporate work workspace. */
   public async isWorkWorkspace(cwd: string, config: PolicyConfig): Promise<WorkspaceDetectionResult> {
-    const cached = this.cache.get(cwd);
+    const key = this.cacheKey(cwd, config);
+    const cached = this.cache.get(key);
     if (cached && Date.now() - cached.timestamp < this.ttlMs) {
       return cached.result;
     }
 
-    // 1. Check local path hierarchy patterns (e.g. "*work*", "*company*", "~/work/**")
     if (config.company.localPathPatterns?.length) {
       for (const pattern of config.company.localPathPatterns) {
         if (this.matchesPathPattern(cwd, pattern)) {
-          const result: WorkspaceDetectionResult = {
+          return this.cacheResult(key, {
+            classification: "work",
             isWork: true,
             matchedPattern: pattern,
             isGitRepo: false,
-          };
-          this.cache.set(cwd, { result, timestamp: Date.now() });
-          return result;
+          });
         }
       }
     }
 
-    // 2. Query git remotes
     try {
-      const { stdout } = await execFileAsync(
-        "git",
-        ["config", "--get-regexp", "^remote\\..*\\.url$"],
-        { cwd, timeout: 2000 }
-      );
+      let remotesOutput = "";
+      let isGitRepo = true;
+      try {
+        const { stdout } = await execFileAsync(
+          "git",
+          ["config", "--local", "--get-regexp", "^remote\\..*\\.url$"],
+          { cwd, timeout: 2_000 },
+        );
+        remotesOutput = stdout;
+      } catch (error) {
+        // `git config --local --get-regexp` exits 1 when there are no matching remotes;
+        // outside a repository Git exits 128 and reports that --local is unavailable.
+        const noMatchingRemote = errorCode(error) === 1;
+        const notGitRepository = errorCode(error) === 128 && /--local can only be used inside a git repository/i.test(errorStderr(error));
+        if (!noMatchingRemote && !notGitRepository) throw error;
+        isGitRepo = await this.isGitRepository(cwd);
+      }
 
-      const remotes = stdout
+      const remotes = remotesOutput
         .split("\n")
         .map((line) => line.replace(/^remote\.[^.]+\.url\s+/, "").trim())
         .filter((url) => url.length > 0);
@@ -145,31 +182,28 @@ export class WorkspaceDetector {
       for (const url of remotes) {
         const matchedPattern = this.matchesRemotePattern(url, config.company.remotePatterns);
         if (matchedPattern) {
-          const result: WorkspaceDetectionResult = {
+          return this.cacheResult(key, {
+            classification: "work",
             isWork: true,
             matchedRemote: url,
             matchedPattern,
             isGitRepo: true,
-          };
-          this.cache.set(cwd, { result, timestamp: Date.now() });
-          return result;
+          });
         }
       }
 
-      const result: WorkspaceDetectionResult = {
+      return this.cacheResult(key, {
+        classification: "personal",
         isWork: false,
-        isGitRepo: true,
-      };
-      this.cache.set(cwd, { result, timestamp: Date.now() });
-      return result;
+        isGitRepo,
+      });
     } catch {
-      // Not a git repository or git binary not available
-      const result: WorkspaceDetectionResult = {
+      return this.cacheResult(key, {
+        classification: "unknown",
         isWork: false,
         isGitRepo: false,
-      };
-      this.cache.set(cwd, { result, timestamp: Date.now() });
-      return result;
+        warning: "Could not evaluate the workspace repository; workspace classification is unknown.",
+      });
     }
   }
 

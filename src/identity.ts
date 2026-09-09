@@ -1,43 +1,37 @@
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { homedir } from "node:os";
-import type { IdentityInfo, AccountStore } from "./types.js";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { IdentityInfo } from "./types.js";
 
 type FetchImplementation = typeof globalThis.fetch;
 
+/**
+ * Best-effort account identification from the credential currently selected by Pi.
+ * It is advisory metadata, not a provider entitlement or a security boundary.
+ */
 export class IdentityResolver {
-  private cache = new Map<
-    string,
-    { credentialFingerprint: string; info: IdentityInfo; expires: number }
-  >();
-  private readonly customAuthPath?: string;
-  private readonly accountsStorePath: string;
-  private readonly fetchImpl: FetchImplementation;
+  private cache = new Map<string, { credentialFingerprint: string; info: IdentityInfo; expires: number }>();
 
   constructor(
-    customAuthPath?: string,
-    customAccountsStorePath?: string,
-    fetchImpl: FetchImplementation = globalThis.fetch
-  ) {
-    this.customAuthPath = customAuthPath;
-    this.accountsStorePath =
-      customAccountsStorePath || join(homedir(), ".pi", "agent", "work-policy-accounts.json");
-    this.fetchImpl = fetchImpl;
-  }
+    private readonly customAuthPath?: string,
+    private readonly fetchImpl: FetchImplementation = globalThis.fetch,
+  ) {}
 
   private hashToken(token: string): string {
     return createHash("sha256").update(token).digest("hex");
   }
 
-  private credentialToken(credential: any): string | undefined {
-    for (const value of [credential?.refresh, credential?.access, credential?.key]) {
+  private credentialToken(credential: unknown): string | undefined {
+    if (typeof credential !== "object" || credential === null) return undefined;
+    const record = credential as Record<string, unknown>;
+    for (const value of [record.refresh, record.access, record.key]) {
       if (typeof value === "string" && value.length > 0) return value;
     }
     return undefined;
   }
 
-  private credentialFingerprint(credential: any): string {
+  private credentialFingerprint(credential: unknown): string {
     const token = this.credentialToken(credential);
     return token ? this.hashToken(token) : "none";
   }
@@ -46,7 +40,7 @@ export class IdentityResolver {
     provider: string,
     credentialFingerprint: string,
     info: IdentityInfo,
-    ttlMs: number
+    ttlMs: number,
   ): IdentityInfo {
     this.cache.set(provider, {
       credentialFingerprint,
@@ -56,73 +50,42 @@ export class IdentityResolver {
     return info;
   }
 
-  public readAuthStorage(): Record<string, any> {
-    const authPath = this.customAuthPath || join(homedir(), ".pi", "agent", "auth.json");
+  /** Returns the public or validated GitHub Enterprise Server profile endpoint. */
+  private githubProfileEndpoint(enterpriseUrl: unknown): string | undefined {
+    if (enterpriseUrl === undefined || enterpriseUrl === null || enterpriseUrl === "") {
+      return "https://api.github.com/user";
+    }
+    if (typeof enterpriseUrl !== "string") return undefined;
+
+    try {
+      const candidate = enterpriseUrl.includes("://") ? enterpriseUrl : `https://${enterpriseUrl}`;
+      const enterprise = new URL(candidate);
+      if (enterprise.protocol !== "https:" || !enterprise.hostname || enterprise.username || enterprise.password) {
+        return undefined;
+      }
+      const path = enterprise.pathname.replace(/\/+$/, "");
+      const apiPath = path.endsWith("/api/v3") ? path : `${path}/api/v3`;
+      return new URL(`${apiPath}/user`, enterprise.origin).toString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  public readAuthStorage(): Record<string, unknown> {
+    const authPath = this.customAuthPath || join(getAgentDir(), "auth.json");
     if (!existsSync(authPath)) return {};
     try {
-      return JSON.parse(readFileSync(authPath, "utf-8"));
+      const parsed: unknown = JSON.parse(readFileSync(authPath, "utf-8"));
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
     } catch {
       return {};
     }
   }
 
-  public readAccountStore(): AccountStore {
-    if (!existsSync(this.accountsStorePath)) {
-      return { accounts: {} };
-    }
-    try {
-      return JSON.parse(readFileSync(this.accountsStorePath, "utf-8"));
-    } catch {
-      return { accounts: {} };
-    }
-  }
-
-  public writeAccountStore(store: AccountStore): void {
-    try {
-      mkdirSync(dirname(this.accountsStorePath), { recursive: true });
-      writeFileSync(this.accountsStorePath, JSON.stringify(store, null, 2), {
-        encoding: "utf-8",
-        mode: 0o600,
-      });
-    } catch {
-      // Ignore write errors if permissions or dir inaccessible
-    }
-  }
-
-  private saveVerifiedAccount(provider: string, email: string, tokenHash: string): void {
-    const store = this.readAccountStore();
-    const now = Date.now();
-    store.accounts[provider] = {
-      account: email.trim().toLowerCase(),
-      tokenHash,
-      attestedAt: now,
-      lastSeenAt: now,
-    };
-    this.writeAccountStore(store);
-  }
-
-  /**
-   * Manually attests an account binding for an opaque provider credential.
-   * Prefer automatic provider identity probes when available.
-   */
-  public attestAccount(provider: string, email: string): boolean {
-    const auth = this.readAuthStorage();
-    const token = this.credentialToken(auth[provider]);
-    if (!token) return false;
-
-    this.saveVerifiedAccount(provider, email, this.hashToken(token));
-    this.cache.delete(provider);
-    return true;
-  }
-
-  /**
-   * Resolve the Anthropic OAuth account through the same authenticated bootstrap
-   * endpoint used by Claude Code. This works after Pi's standard /login anthropic
-   * flow even though Pi's auth.json intentionally stores only OAuth tokens.
-   */
   private async resolveAnthropicOAuthIdentity(
     accessToken: string,
-    credentialFingerprint: string
   ): Promise<IdentityInfo | undefined> {
     try {
       const response = await this.fetchImpl("https://api.anthropic.com/api/claude_cli/bootstrap", {
@@ -134,22 +97,15 @@ export class IdentityResolver {
         },
         signal: AbortSignal.timeout(4_000),
       });
-
       if (!response.ok) return undefined;
 
-      const payload = (await response.json()) as {
-        oauth_account?: {
-          account_email?: unknown;
-        };
-      };
+      const payload = (await response.json()) as { oauth_account?: { account_email?: unknown } };
       const email = payload.oauth_account?.account_email;
       if (typeof email !== "string" || !email.includes("@")) return undefined;
 
-      const normalizedEmail = email.trim().toLowerCase();
-      this.saveVerifiedAccount("anthropic", normalizedEmail, credentialFingerprint);
       return {
         provider: "anthropic",
-        email: normalizedEmail,
+        email: email.trim().toLowerCase(),
         verified: true,
         source: "oauth_api",
       };
@@ -158,44 +114,26 @@ export class IdentityResolver {
     }
   }
 
-  /**
-   * Resolves the identity for a given provider.
-   */
+  /** Resolve advisory account metadata for a provider credential. */
   public async resolveIdentity(provider: string): Promise<IdentityInfo> {
     const auth = this.readAuthStorage();
-    const cred = auth[provider];
-    const fingerprint = this.credentialFingerprint(cred);
+    const credential = auth[provider];
+    const fingerprint = this.credentialFingerprint(credential);
     const cached = this.cache.get(provider);
-    if (
-      cached &&
-      cached.credentialFingerprint === fingerprint &&
-      Date.now() < cached.expires
-    ) {
+    if (cached && cached.credentialFingerprint === fingerprint && Date.now() < cached.expires) {
       return cached.info;
     }
 
-    if (!cred) {
-      return this.cacheIdentity(
-        provider,
-        fingerprint,
-        { provider, verified: false, source: "unknown" },
-        10_000
-      );
+    if (!credential || typeof credential !== "object") {
+      return this.cacheIdentity(provider, fingerprint, { provider, verified: false, source: "unknown" }, 10_000);
     }
+    const cred = credential as Record<string, unknown>;
 
-    // 1. GitHub Copilot: Probe OAuth user API & token inspection
     if (provider === "github-copilot") {
-      const isEnterprise =
-        typeof cred.access === "string" &&
-        (cred.access.includes("copilot_enterprise") ||
-          cred.access.includes("proxy.enterprise") ||
-          cred.access.includes("enterprise.githubcopilot.com") ||
-          !!cred.enterpriseUrl);
-
-      // Probe GitHub User API using OAuth refresh token (ghu_...)
-      if (cred.refresh && typeof cred.refresh === "string") {
+      const endpoint = this.githubProfileEndpoint(cred.enterpriseUrl);
+      if (typeof cred.refresh === "string" && endpoint) {
         try {
-          const response = await this.fetchImpl("https://api.github.com/user", {
+          const response = await this.fetchImpl(endpoint, {
             headers: {
               Authorization: `Bearer ${cred.refresh}`,
               Accept: "application/json",
@@ -203,7 +141,6 @@ export class IdentityResolver {
             },
             signal: AbortSignal.timeout(3_000),
           });
-
           if (response.ok) {
             const data = (await response.json()) as { email?: string; login?: string };
             return this.cacheIdentity(
@@ -213,99 +150,52 @@ export class IdentityResolver {
                 provider,
                 email: data.email?.toLowerCase(),
                 username: data.login,
-                isEnterpriseSKU: isEnterprise,
                 verified: true,
                 source: "oauth_api",
               },
-              300_000
+              300_000,
             );
           }
         } catch {
-          // Fallback to token claims if network unavailable
+          // Account identity remains unknown when the profile endpoint is unavailable.
         }
       }
-
-      return this.cacheIdentity(
-        provider,
-        fingerprint,
-        {
-          provider,
-          isEnterpriseSKU: isEnterprise,
-          verified: isEnterprise,
-          source: isEnterprise ? "jwt_claim" : "unknown",
-        },
-        60_000
-      );
+      return this.cacheIdentity(provider, fingerprint, { provider, verified: false, source: "unknown" }, 60_000);
     }
 
-    // 2. OpenAI Codex: Inspect JWT claims
     if (provider === "openai-codex" && typeof cred.access === "string") {
       try {
         const parts = cred.access.split(".");
         if (parts.length === 3) {
-          const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf-8"));
-          const email =
-            payload.email ||
-            payload["https://api.openai.com/auth"]?.email ||
-            payload["https://api.openai.com/profile"]?.email;
-
-          return this.cacheIdentity(
-            provider,
-            fingerprint,
-            {
+          const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8")) as Record<string, unknown>;
+          if (typeof payload.exp === "number" && payload.exp * 1_000 <= Date.now()) {
+            throw new Error("Credential claim is expired");
+          }
+          const authClaims = payload["https://api.openai.com/auth"];
+          const profileClaims = payload["https://api.openai.com/profile"];
+          const email = payload.email ||
+            (typeof authClaims === "object" && authClaims !== null ? (authClaims as Record<string, unknown>).email : undefined) ||
+            (typeof profileClaims === "object" && profileClaims !== null ? (profileClaims as Record<string, unknown>).email : undefined);
+          if (typeof email === "string" && email.includes("@")) {
+            return this.cacheIdentity(
               provider,
-              email: email ? String(email).toLowerCase() : undefined,
-              verified: !!email,
-              source: "jwt_claim",
-            },
-            300_000
-          );
+              fingerprint,
+              { provider, email: email.toLowerCase(), verified: true, source: "jwt_claim" },
+              300_000,
+            );
+          }
         }
       } catch {
-        // Fall through to token-bound attestation.
+        // Keep unknown rather than accepting a malformed or expired claim.
       }
     }
 
-    // 3. Anthropic OAuth: automatically resolve the account selected in standard Pi login.
-    if (
-      provider === "anthropic" &&
-      cred.type === "oauth" &&
-      typeof cred.access === "string"
-    ) {
-      const identity = await this.resolveAnthropicOAuthIdentity(cred.access, fingerprint);
-      if (identity) {
-        return this.cacheIdentity(provider, fingerprint, identity, 300_000);
-      }
+    if (provider === "anthropic" && cred.type === "oauth" && typeof cred.access === "string") {
+      const identity = await this.resolveAnthropicOAuthIdentity(cred.access);
+      if (identity) return this.cacheIdentity(provider, fingerprint, identity, 300_000);
     }
 
-    // 4. Token-bound manual attestation fallback for opaque/offline credentials.
-    const activeToken = this.credentialToken(cred);
-    if (activeToken) {
-      const store = this.readAccountStore();
-      const entry = store.accounts[provider];
-      if (entry?.tokenHash === fingerprint) {
-        entry.lastSeenAt = Date.now();
-        this.writeAccountStore(store);
-        return this.cacheIdentity(
-          provider,
-          fingerprint,
-          {
-            provider,
-            email: entry.account,
-            verified: true,
-            source: "token_attestation",
-          },
-          60_000
-        );
-      }
-    }
-
-    return this.cacheIdentity(
-      provider,
-      fingerprint,
-      { provider, verified: false, source: "unknown" },
-      10_000
-    );
+    return this.cacheIdentity(provider, fingerprint, { provider, verified: false, source: "unknown" }, 10_000);
   }
 
   public clearCache(): void {

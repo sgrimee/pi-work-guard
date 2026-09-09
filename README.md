@@ -1,65 +1,66 @@
-# `pi-work-guard` 🛡️
+# pi-work-guard 🛡️
 
-Enterprise Model Provider Policy Guard for the [Pi Coding Agent](https://github.com/earendil-works/pi-mono).
+A **best-effort workspace and model-provider policy guard** for the [Pi Coding Agent](https://pi.dev).
 
-`pi-work-guard` prevents accidental transmission of proprietary enterprise code to unauthorized LLM model providers by automatically detecting corporate repositories, validating authenticated accounts, and intercepting unauthorized prompts.
+## Goal
 
----
+Use `pi-work-guard` when the same Pi installation is used for both **work** and **personal** projects. Its purpose is to help you avoid an honest mistake: using an AI provider that your work policy does not permit while you are in a work repository.
+
+It identifies configured workspaces from Git remotes or local paths, compares Pi's active provider with your work policy, and warns or blocks ordinary prompts when that provider is not permitted for the current work context. In personal contexts, the personal policy applies—by default, providers remain available. Configure trusted repository overrides for legitimate edge cases.
+
+> [!IMPORTANT]
+> This is a user-assistance tool, **not an unbypassable security or compliance boundary**. Pi extensions run with the user's system permissions; users and other local software can change configuration, disable extensions, or use other tools. Use organization-managed controls where strict enforcement is required.
 
 ## Features
 
-- **🏢 Automatic Work Repo Detection:** Inspects Git remotes (e.g. `*.company.com`, `github.com/org/*`, SSH remotes `git@github.company.com:...`) and local paths to differentiate between work and personal workspaces.
-- **👤 Dynamic Account Verification:**
-  - **GitHub Copilot:** Probes authenticated GitHub user profile via OAuth to verify corporate email and enterprise seat SKU.
-  - **OpenAI Codex:** Decodes OAuth JWT claims to verify corporate email.
-  - **Anthropic (Claude Pro/Max):** Queries Anthropic's authenticated Claude CLI bootstrap endpoint to identify the account selected by Pi's standard `/login anthropic` flow. OAuth refreshes and account switches are detected automatically; manual token-bound attestation remains available as an offline fallback.
-  - **OpenCode / OpenRouter:** Strictly blocked on corporate repositories.
-- **⚡ Zero-Bypass Multi-Layer Enforcement:**
-  - **UI / Status Bar:** Shows a compact workspace indicator (`🛡️` for compliant work, `🏠` for personal) while retaining a verbose `🚨 Policy Block` warning when non-compliant.
-  - **Prompt Interception (`input` hook):** Prevents prompt turn execution if unauthorized.
-  - **Network Safety Net (`before_provider_request` hook):** Aborts the active agent signal after payload construction and before provider transport.
-- **🌍 Enterprise Configurable:** Fully customizable for any organization via `work-policy.json`. See ready-to-use templates in `examples/`.
+- Detects configured work repositories from Git remotes and local path patterns.
+- Displays a concise work (`🛡️`), personal (`🏠`), or unknown-workspace (`⚠`) status.
+- Blocks ordinary Pi prompts for providers that a configured work policy denies.
+- Defaults a workspace to personal when no configured work signal matches and repository evaluation succeeds.
+- Blocks provider use when workspace classification is unknown because repository evaluation failed.
+- Identifies account hints from the Pi credential currently in use:
+  - GitHub Copilot: GitHub.com or GitHub Enterprise profile endpoint
+  - OpenAI Codex: non-expired email claim in the active credential
+  - Anthropic OAuth: Anthropic Claude CLI bootstrap endpoint
+- Includes a generic policy template and JSON Schema.
 
----
+## Install
 
-## Installation & Setup
-
-### Point Pi at the repository source (recommended for development)
-
-Install dependencies:
+Install from npm once the package is published:
 
 ```bash
-npm install
+pi install npm:pi-work-guard
 ```
 
-Then add the absolute source entry path to `~/.pi/agent/settings.json`:
+For local development, point Pi directly at this package directory or its entry point:
 
-```json
-{
-  "extensions": [
-    "/absolute/path/to/pi-work-guard/src/index.ts"
-  ]
-}
+```bash
+pi install /absolute/path/to/pi-work-guard
+# or for a quick source test
+pi -e /absolute/path/to/pi-work-guard/src/index.ts
 ```
 
-Pi loads TypeScript extensions directly, so no build or symlink is required. Run `/reload` after source changes. Use `npm run build` before publishing a release.
+Pi loads the TypeScript extension resource directly. Run `/reload` after changing source during an interactive Pi session.
 
----
+## Configuration
 
-## Configuration (`work-policy.json`)
+The extension loads one complete policy in this order:
 
-`pi-work-guard` looks for configuration in:
-1. `.pi/work-policy.json` (Project-local override)
-2. `~/.pi/agent/work-policy.json` (Global configuration)
-3. Built-in default configuration
+1. `.pi/work-policy.json` in the current repository, **only when Pi trusts that project**
+2. `~/.pi/agent/work-policy.json` (or Pi's configured agent directory)
+3. Its built-in generic default
 
-To configure for your organization, copy and customize a policy template from `examples/`:
+A trusted project-local policy intentionally **replaces** the global policy rather than merging with it. This supports repository-specific edge cases; it also means local policies are user-controlled and unsuitable as centralized enforcement.
+
+The first extension load creates the generic global file when one does not exist. Copy and tailor the supplied template first if possible:
 
 ```bash
 cp examples/generic-policy.json ~/.pi/agent/work-policy.json
 ```
 
-### Configuration Structure:
+Every policy must be complete and conform to [`schema.json`](schema.json). Invalid or unreadable project policies are ignored, with a warning visible in `/provider-policy status`; the extension falls back to the global or built-in policy. After changing policy workspace patterns, use `/provider-policy reload` to immediately clear cached workspace detection.
+
+### Example policy
 
 ```json
 {
@@ -79,8 +80,7 @@ cp examples/generic-policy.json ~/.pi/agent/work-policy.json
     "providers": {
       "github-copilot": {
         "mode": "require_account",
-        "allowedEmailDomains": ["acme.corp"],
-        "allowEnterpriseSKU": true
+        "allowedEmailDomains": ["acme.corp"]
       },
       "openai-codex": {
         "mode": "require_account",
@@ -93,8 +93,8 @@ cp examples/generic-policy.json ~/.pi/agent/work-policy.json
       },
       "azure-openai": { "mode": "allow" },
       "amazon-bedrock": { "mode": "allow" },
-      "opencode": { "mode": "deny", "reason": "The 'OpenCode Zen' provider is not approved for corporate repositories." },
-      "openrouter": { "mode": "deny", "reason": "OpenRouter is prohibited on corporate code." }
+      "opencode": { "mode": "deny" },
+      "openrouter": { "mode": "deny" }
     }
   },
   "personalPolicy": {
@@ -103,29 +103,41 @@ cp examples/generic-policy.json ~/.pi/agent/work-policy.json
 }
 ```
 
----
+`fallbackModel` is displayed as a suggestion after a block. The extension never switches models automatically.
 
-## Slash Commands
+### Workspace states
+
+- **Work:** a configured local path or Git remote matches. The work policy determines whether a provider is permitted.
+- **Personal:** no configured work signal matches and the workspace repository can be evaluated. The personal policy determines whether the provider is permitted.
+- **Unknown:** the workspace repository cannot be evaluated (for example, Git is unavailable, the directory cannot be read, or the command times out). Provider use is blocked until the classification can be determined. Use `/provider-policy status` to inspect the reason and resolve the underlying problem.
+
+## Commands
 
 | Command | Description |
-| :--- | :--- |
-| `/provider-policy` or `/provider-policy status` | Displays current workspace classification, active model, and policy compliance status. |
-| `/provider-policy check <provider> [model]` | Tests whether a specific provider or model is permitted in the current workspace. |
-| `/provider-policy account <provider> <email>` | Attests the active credential for a provider (e.g. `/provider-policy account anthropic user@company.com`). |
-| `/provider-policy reload` | Reloads `work-policy.json` and flushes cached identity metadata. |
+| --- | --- |
+| `/provider-policy` or `/provider-policy status` | Show workspace classification, policy source, active model, account hint, and warnings. |
+| `/provider-policy check <provider> [model]` | Check a provider/model without switching. |
+| `/provider-policy reload` | Clear caches and re-read policy configuration. |
 
----
+## Privacy, prerequisites, and limitations
 
-## Running Tests
+- Requires Node.js 22.19+ and the Pi Coding Agent. Git is used to inspect remotes.
+- To obtain account hints, the extension reads the active Pi credential file. It may call `https://api.github.com/user` for GitHub Copilot and `https://api.anthropic.com/api/claude_cli/bootstrap` for Anthropic OAuth. OpenAI Codex information is read locally from the active credential.
+- Identity data is used in memory only; this extension does not persist account attestations or raw credentials.
+- A successfully evaluated workspace with no matching local path or Git remote is classified as **personal**. Network failure, missing Git, unreadable directories, and other repository-evaluation errors result in an **unknown** classification that blocks provider use until resolved.
+- Account hints and decoded credential claims are not proof of provider entitlements or organizational compliance. Validate provider, tenant, and data-handling requirements through your organization's approved process.
 
-The test suite uses Node's native test runner:
+## Development
 
 ```bash
+npm install
 npm test
+npm run build
+npm pack --dry-run
 ```
 
----
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance and [SECURITY.md](SECURITY.md) for reporting suspected security issues.
 
 ## License
 
-MIT
+[MIT](LICENSE)
