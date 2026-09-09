@@ -3,63 +3,53 @@
   "company": {
     "name": "Acme Corporation",
     "emailDomains": [
-      "acme.corp",
-      "acme.com"
+      "acme.corp"
     ],
     "remotePatterns": [
       "*acme.corp*",
-      "github.com/acme-corp/*",
-      "gitlab.acme.corp/*"
+      "github.com/acme-corp/*"
     ],
     "localPathPatterns": [
-      "~/work/**",
-      "~/acme/**"
+      "*acme*"
     ]
   },
   "workPolicy": {
     "defaultBehavior": "deny",
-    "fallbackModel": "github-copilot/gpt-5.4",
+    "fallbackModel": "github-copilot/gpt-5.6-terra",
     "autoSwitchToFallback": false,
     "providers": {
       "github-copilot": {
         "mode": "require_account",
         "allowedEmailDomains": [
-          "acme.corp",
-          "acme.com"
+          "acme.corp"
         ],
         "allowEnterpriseSKU": true
       },
       "openai-codex": {
         "mode": "require_account",
         "allowedEmailDomains": [
-          "acme.corp",
-          "acme.com"
+          "acme.corp"
         ]
       },
       "anthropic": {
         "mode": "allow_if_tagged",
         "allowedEmailDomains": [
-          "acme.corp",
-          "acme.com"
-        ],
-        "deniedAccounts": [
-          "*@gmail.com",
-          "*@yahoo.com"
+          "acme.corp"
         ]
       },
       "azure-openai": {
-        "mode": "allow"
+        "mode": "deny"
       },
       "amazon-bedrock": {
-        "mode": "allow"
+        "mode": "deny"
       },
       "opencode": {
         "mode": "deny",
-        "reason": "The 'OpenCode Zen' provider is not approved for corporate repositories."
+        "reason": "The 'OpenCode Zen' provider is not approved by Acme Corporation policy for proprietary repositories."
       },
       "openrouter": {
         "mode": "deny",
-        "reason": "OpenRouter is prohibited on corporate repositories."
+        "reason": "OpenRouter external routing is prohibited on Acme Corporation proprietary repositories."
       }
     }
   },
