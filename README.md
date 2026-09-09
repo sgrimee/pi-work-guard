@@ -58,7 +58,7 @@ The first extension load creates the generic global file when one does not exist
 cp examples/generic-policy.json ~/.pi/agent/work-policy.json
 ```
 
-Every policy must be complete and conform to [`schema.json`](schema.json). Invalid or unreadable project policies are ignored, with a warning visible in `/provider-policy status`; the extension falls back to the global or built-in policy. After changing policy workspace patterns, use `/provider-policy reload` to immediately clear cached workspace detection.
+Every policy must be complete and conform to [`schema.json`](schema.json). `/provider-policy status` reports specific invalid fields (including their config path). An invalid or unreadable trusted project policy falls back to a valid global policy. If no usable global policy remains—for example, the global policy is invalid—the workspace is shown as **Unknown** and all provider use is blocked rather than treating the built-in generic default as a personal-policy decision. After changing policy workspace patterns, use `/provider-policy reload` to immediately clear cached workspace detection.
 
 ### Example policy
 
@@ -109,7 +109,7 @@ Every policy must be complete and conform to [`schema.json`](schema.json). Inval
 
 - **Work:** a configured local path or Git remote matches. The work policy determines whether a provider is permitted.
 - **Personal:** no configured work signal matches and the workspace repository can be evaluated. The personal policy determines whether the provider is permitted.
-- **Unknown:** the workspace repository cannot be evaluated (for example, Git is unavailable, the directory cannot be read, or the command times out). Provider use is blocked until the classification can be determined. Use `/provider-policy status` to inspect the reason and resolve the underlying problem.
+- **Unknown:** the workspace repository cannot be evaluated (for example, Git is unavailable, the directory cannot be read, or the command times out), or the only available policy configuration is invalid or unreadable. Provider use is blocked until the classification can be determined. Use `/provider-policy status` to inspect the reason and resolve the underlying problem.
 
 ## Commands
 

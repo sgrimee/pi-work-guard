@@ -55,75 +55,108 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isStringArray(value: unknown, allowEmpty = false): value is string[] {
-  return (
-    Array.isArray(value) &&
-    (allowEmpty || value.length > 0) &&
-    value.every((item) => typeof item === "string" && item.length > 0)
-  );
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
-  return Object.keys(value).every((key) => keys.includes(key));
-}
-
-function isProviderRule(value: unknown): value is ProviderRule {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["mode", "allowedEmailDomains", "allowedAccounts", "deniedAccounts", "reason"])) return false;
-  if (!(["allow", "deny", "require_account", "allow_if_tagged"] as const).includes(value.mode as ProviderRule["mode"])) {
+function validateObject(
+  value: unknown,
+  path: string,
+  requiredKeys: string[],
+  allowedKeys: string[],
+  errors: string[],
+): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    errors.push(`${path} must be an object.`);
     return false;
   }
-  return (
-    (value.allowedEmailDomains === undefined || isStringArray(value.allowedEmailDomains)) &&
-    (value.allowedAccounts === undefined || isStringArray(value.allowedAccounts, true)) &&
-    (value.deniedAccounts === undefined || isStringArray(value.deniedAccounts, true)) &&
-    (value.reason === undefined || typeof value.reason === "string")
-  );
+
+  for (const key of requiredKeys) {
+    if (!(key in value)) errors.push(`${path}.${key} is required.`);
+  }
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.includes(key)) {
+      errors.push(`${path}.${key} is not supported (allowed: ${allowedKeys.join(", ")}).`);
+    }
+  }
+  return true;
+}
+
+function validateStringArray(value: unknown, path: string, errors: string[], allowEmpty = false): void {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0) || value.some((item) => typeof item !== "string" || item.length === 0)) {
+    errors.push(`${path} must be ${allowEmpty ? "an array" : "a non-empty array"} of non-empty strings.`);
+  }
+}
+
+function validateProviderRule(value: unknown, path: string, errors: string[]): void {
+  if (!validateObject(value, path, ["mode"], ["mode", "allowedEmailDomains", "allowedAccounts", "deniedAccounts", "reason"], errors)) return;
+  if (!( ["allow", "deny", "require_account", "allow_if_tagged"] as const).includes(value.mode as ProviderRule["mode"])) {
+    errors.push(`${path}.mode must be one of: allow, deny, require_account, allow_if_tagged.`);
+  }
+  if (value.allowedEmailDomains !== undefined) validateStringArray(value.allowedEmailDomains, `${path}.allowedEmailDomains`, errors);
+  if (value.allowedAccounts !== undefined) validateStringArray(value.allowedAccounts, `${path}.allowedAccounts`, errors, true);
+  if (value.deniedAccounts !== undefined) validateStringArray(value.deniedAccounts, `${path}.deniedAccounts`, errors, true);
+  if (value.reason !== undefined && typeof value.reason !== "string") errors.push(`${path}.reason must be a string.`);
+}
+
+/** Return user-actionable validation errors for an untrusted policy JSON object. */
+export function policyConfigValidationErrors(value: unknown): string[] {
+  const errors: string[] = [];
+  if (!validateObject(value, "policy", ["company", "workPolicy", "personalPolicy"], ["$schema", "company", "workPolicy", "personalPolicy"], errors)) {
+    return errors;
+  }
+
+  if (value.$schema !== undefined && typeof value.$schema !== "string") {
+    errors.push("policy.$schema must be a string.");
+  }
+
+  const company = value.company;
+  if (validateObject(company, "company", ["name", "emailDomains", "remotePatterns"], ["name", "emailDomains", "remotePatterns", "localPathPatterns"], errors)) {
+    if (typeof company.name !== "string" || company.name.length === 0) errors.push("company.name must be a non-empty string.");
+    validateStringArray(company.emailDomains, "company.emailDomains", errors);
+    validateStringArray(company.remotePatterns, "company.remotePatterns", errors);
+    if (company.localPathPatterns !== undefined) validateStringArray(company.localPathPatterns, "company.localPathPatterns", errors, true);
+  }
+
+  const workPolicy = value.workPolicy;
+  if (validateObject(workPolicy, "workPolicy", ["defaultBehavior", "providers"], ["defaultBehavior", "fallbackModel", "providers"], errors)) {
+    if (!( ["allow", "deny"] as const).includes(workPolicy.defaultBehavior as "allow" | "deny")) {
+      errors.push("workPolicy.defaultBehavior must be either allow or deny.");
+    }
+    if (workPolicy.fallbackModel !== undefined && (typeof workPolicy.fallbackModel !== "string" || workPolicy.fallbackModel.length === 0)) {
+      errors.push("workPolicy.fallbackModel must be a non-empty string.");
+    }
+    if (!isRecord(workPolicy.providers)) {
+      errors.push("workPolicy.providers must be an object.");
+    } else {
+      for (const [provider, rule] of Object.entries(workPolicy.providers)) {
+        validateProviderRule(rule, `workPolicy.providers.${provider}`, errors);
+      }
+    }
+  }
+
+  const personalPolicy = value.personalPolicy;
+  if (validateObject(personalPolicy, "personalPolicy", ["defaultBehavior"], ["defaultBehavior"], errors)) {
+    if (!( ["allow", "deny"] as const).includes(personalPolicy.defaultBehavior as "allow" | "deny")) {
+      errors.push("personalPolicy.defaultBehavior must be either allow or deny.");
+    }
+  }
+
+  return errors;
 }
 
 /** Validate untrusted JSON before it reaches workspace or policy evaluation. */
 export function isPolicyConfig(value: unknown): value is PolicyConfig {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["$schema", "company", "workPolicy", "personalPolicy"])) return false;
-  const { company, workPolicy, personalPolicy } = value;
-  if (
-    !isRecord(company) ||
-    !isRecord(workPolicy) ||
-    !isRecord(personalPolicy) ||
-    !hasOnlyKeys(company, ["name", "emailDomains", "remotePatterns", "localPathPatterns"]) ||
-    !hasOnlyKeys(workPolicy, ["defaultBehavior", "fallbackModel", "providers"]) ||
-    !hasOnlyKeys(personalPolicy, ["defaultBehavior"])
-  ) return false;
-  if (
-    !isNonEmptyString(company.name) ||
-    !isStringArray(company.emailDomains) ||
-    !isStringArray(company.remotePatterns) ||
-    (company.localPathPatterns !== undefined && !isStringArray(company.localPathPatterns, true))
-  ) {
-    return false;
-  }
-  if (
-    !(["allow", "deny"] as const).includes(workPolicy.defaultBehavior as "allow" | "deny") ||
-    !isRecord(workPolicy.providers) ||
-    (workPolicy.fallbackModel !== undefined && !isNonEmptyString(workPolicy.fallbackModel))
-  ) {
-    return false;
-  }
-  if (!Object.values(workPolicy.providers).every(isProviderRule)) return false;
-  return (["allow", "deny"] as const).includes(personalPolicy.defaultBehavior as "allow" | "deny");
+  return policyConfigValidationErrors(value).length === 0;
 }
 
 function readPolicyFile(path: string): { config?: PolicyConfig; warning?: string } {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf-8"));
-    if (!isPolicyConfig(parsed)) {
-      return { warning: `Ignored invalid policy configuration at ${path}.` };
+    const errors = policyConfigValidationErrors(parsed);
+    if (errors.length > 0) {
+      return { warning: `Ignored invalid policy configuration at ${path}: ${errors.join(" ")}` };
     }
-    return { config: parsed };
-  } catch {
-    return { warning: `Ignored unreadable policy configuration at ${path}.` };
+    return { config: parsed as PolicyConfig };
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
+    return { warning: `Ignored unreadable policy configuration at ${path}.${detail}` };
   }
 }
 
@@ -144,12 +177,16 @@ export class ConfigLoader {
     const projectPath = this.getProjectConfigPath(cwd);
     const globalPath = options.globalPath || this.getGlobalConfigPath();
     const warnings: string[] = [];
+    let invalidPolicyFound = false;
 
     if (existsSync(projectPath)) {
       if (options.allowProjectOverride !== false) {
         const project = readPolicyFile(projectPath);
-        if (project.config) return { config: project.config, source: "project", warnings };
-        if (project.warning) warnings.push(project.warning);
+        if (project.config) return { config: project.config, source: "project", warnings, requiresConfigurationRepair: false };
+        if (project.warning) {
+          warnings.push(project.warning);
+          invalidPolicyFound = true;
+        }
       } else {
         warnings.push(`Ignored project policy at ${projectPath} because the project is not trusted by Pi.`);
       }
@@ -157,11 +194,19 @@ export class ConfigLoader {
 
     if (existsSync(globalPath)) {
       const global = readPolicyFile(globalPath);
-      if (global.config) return { config: global.config, source: "global", warnings };
-      if (global.warning) warnings.push(global.warning);
+      if (global.config) return { config: global.config, source: "global", warnings, requiresConfigurationRepair: false };
+      if (global.warning) {
+        warnings.push(global.warning);
+        invalidPolicyFound = true;
+      }
     }
 
-    return { config: DEFAULT_CONFIG, source: "default", warnings };
+    return {
+      config: DEFAULT_CONFIG,
+      source: "default",
+      warnings,
+      requiresConfigurationRepair: invalidPolicyFound,
+    };
   }
 
   public static initializeGlobalConfig(customGlobalPath?: string): void {

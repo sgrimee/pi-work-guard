@@ -51,6 +51,12 @@ export interface PolicyConfigLoadResult {
   config: PolicyConfig;
   source: PolicyConfigSource;
   warnings: string[];
+  /**
+   * True only when no usable global policy was available because an existing
+   * global file was invalid or unreadable. The built-in default must not then
+   * classify a workspace as personal.
+   */
+  requiresConfigurationRepair: boolean;
 }
 
 export interface IdentityInfo {

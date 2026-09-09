@@ -3,7 +3,7 @@ import { WorkspaceDetector } from "./detector.js";
 import { IdentityResolver } from "./identity.js";
 import { PolicyEngine } from "./policy.js";
 import { ConfigLoader } from "./config.js";
-import type { PolicyConfigLoadResult } from "./types.js";
+import type { PolicyCheckResult, PolicyConfigLoadResult } from "./types.js";
 
 type ProviderRequestBlockContext = {
   abort(): void;
@@ -47,6 +47,27 @@ function fallbackModelHint(load: PolicyConfigLoadResult): string {
     : "Switch to an authorized work model before continuing.";
 }
 
+export async function evaluatePolicy(
+  engine: PolicyEngine,
+  cwd: string,
+  provider: string,
+  modelId: string,
+  load: PolicyConfigLoadResult,
+): Promise<PolicyCheckResult> {
+  if (load.requiresConfigurationRepair) {
+    return {
+      isWorkRepo: false,
+      workspaceClassification: "unknown",
+      workspaceWarning: "A policy configuration file is invalid or unreadable.",
+      allowed: false,
+      provider,
+      modelId,
+      reason: "Policy configuration is invalid or unreadable; provider use is blocked until it is repaired.",
+    };
+  }
+  return engine.evaluate(cwd, provider, modelId, load.config);
+}
+
 export default function workGuardExtension(pi: ExtensionAPI) {
   const detector = new WorkspaceDetector();
   const identityResolver = new IdentityResolver();
@@ -55,10 +76,15 @@ export default function workGuardExtension(pi: ExtensionAPI) {
   async function updateStatus(ctx: ExtensionContext) {
     if (!ctx.model) return;
     const load = loadPolicy(ctx);
-    const result = await engine.evaluate(ctx.cwd, ctx.model.provider, ctx.model.id, load.config);
+    const result = await evaluatePolicy(engine, ctx.cwd, ctx.model.provider, ctx.model.id, load);
 
     if (result.workspaceClassification === "unknown") {
-      ctx.ui.setStatus("work-guard", "🚨 Workspace evaluation failed — provider use blocked");
+      ctx.ui.setStatus(
+        "work-guard",
+        load.requiresConfigurationRepair
+          ? "🚨 Policy configuration invalid — provider use blocked"
+          : "🚨 Workspace evaluation failed — provider use blocked",
+      );
     } else if (!result.allowed) {
       ctx.ui.setStatus(
         "work-guard",
@@ -80,7 +106,7 @@ export default function workGuardExtension(pi: ExtensionAPI) {
 
   pi.on("model_select", async (event, ctx) => {
     const load = loadPolicy(ctx);
-    const result = await engine.evaluate(ctx.cwd, event.model.provider, event.model.id, load.config);
+    const result = await evaluatePolicy(engine, ctx.cwd, event.model.provider, event.model.id, load);
 
     if (!result.allowed) {
       ctx.ui.notify(
@@ -95,7 +121,7 @@ export default function workGuardExtension(pi: ExtensionAPI) {
     if (!ctx.model) return { action: "continue" as const };
 
     const load = loadPolicy(ctx);
-    const result = await engine.evaluate(ctx.cwd, ctx.model.provider, ctx.model.id, load.config);
+    const result = await evaluatePolicy(engine, ctx.cwd, ctx.model.provider, ctx.model.id, load);
 
     if (!result.allowed) {
       const message = [
@@ -106,7 +132,9 @@ export default function workGuardExtension(pi: ExtensionAPI) {
         `Current Model: ${ctx.model.provider}/${ctx.model.id} (BLOCKED)`,
         "",
         result.workspaceClassification === "unknown"
-          ? "Resolve the workspace evaluation problem before continuing."
+          ? load.requiresConfigurationRepair
+            ? "Repair the policy configuration before continuing."
+            : "Resolve the workspace evaluation problem before continuing."
           : fallbackModelHint(load),
       ].join("\n");
 
@@ -121,7 +149,7 @@ export default function workGuardExtension(pi: ExtensionAPI) {
     if (!ctx.model) return;
 
     const load = loadPolicy(ctx);
-    const result = await engine.evaluate(ctx.cwd, ctx.model.provider, ctx.model.id, load.config);
+    const result = await evaluatePolicy(engine, ctx.cwd, ctx.model.provider, ctx.model.id, load);
 
     if (!result.allowed) {
       abortBlockedProviderRequest(
@@ -157,7 +185,7 @@ export default function workGuardExtension(pi: ExtensionAPI) {
           return;
         }
 
-        const result = await engine.evaluate(ctx.cwd, provider, modelId, config);
+        const result = await evaluatePolicy(engine, ctx.cwd, provider, modelId, load);
         const report = [
           `=== Work Policy Check: ${provider}/${modelId} ===`,
           `Workspace: ${result.workspaceClassification === "work" ? "🏢 Corporate Work Repo" : result.workspaceClassification === "unknown" ? "⚠️ Unknown Workspace" : "🏠 Personal Repo"}`,
@@ -177,7 +205,7 @@ export default function workGuardExtension(pi: ExtensionAPI) {
         return;
       }
 
-      const result = await engine.evaluate(ctx.cwd, ctx.model.provider, ctx.model.id, config);
+      const result = await evaluatePolicy(engine, ctx.cwd, ctx.model.provider, ctx.model.id, load);
       const lines = [
         `=== ${config.company.name} Work Policy Status ===`,
         `Workspace: ${result.workspaceClassification === "work" ? `🏢 Corporate Work Repo (${result.matchedRemote || ctx.cwd})` : result.workspaceClassification === "unknown" ? `⚠️ Unknown Workspace (${result.workspaceWarning || ctx.cwd})` : "🏠 Personal Repo"}`,
