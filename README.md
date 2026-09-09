@@ -136,7 +136,7 @@ npm run build
 npm pack --dry-run
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance and [SECURITY.md](SECURITY.md) for reporting suspected security issues.
+See [SECURITY.md](SECURITY.md) for reporting suspected security issues.
 
 ## License
 

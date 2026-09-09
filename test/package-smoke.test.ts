@@ -38,8 +38,7 @@ test("packed package loads through Pi with production dependencies", () => {
         "--no-tools",
         "-e",
         packageDir,
-        "-p",
-        "extension-load smoke test",
+        "--list-models",
       ],
       {
         cwd: repositoryRoot,
@@ -53,9 +52,10 @@ test("packed package loads through Pi with production dependencies", () => {
     );
     const output = `${result.stdout}\n${result.stderr}`;
 
+    assert.equal(result.error, undefined, `Pi failed to start: ${result.error?.message || "unknown error"}`);
+    assert.equal(result.status, 0, output);
     assert.doesNotMatch(output, /Failed to load extension|Cannot find module|ERR_MODULE_NOT_FOUND/i);
-    // An isolated agent dir deliberately has no credentials. Reaching this error proves Pi loaded the package.
-    assert.match(output, /No API key found for the selected model/i);
+    assert.match(output, /No models available|provider\s+model/i);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
