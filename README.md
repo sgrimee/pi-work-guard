@@ -26,10 +26,21 @@ It identifies configured workspaces from Git remotes or local paths, compares Pi
 
 ## Install
 
-Install from npm once the package is published:
+Install the published GitHub package with one command:
 
 ```bash
-pi install npm:pi-work-guard
+pi install git:github.com/sgrimee/pi-work-guard
+# or pin a release
+pi install git:github.com/sgrimee/pi-work-guard@v0.1.1
+```
+
+No npm account or separate build step is needed; Pi installs the runtime
+dependencies automatically. Run `/reload` in existing Pi sessions after installation.
+
+Try it for one session without installing:
+
+```bash
+pi -e git:github.com/sgrimee/pi-work-guard
 ```
 
 For local development, point Pi directly at this package directory or its entry point:
@@ -131,8 +142,7 @@ Every policy must be complete and conform to [`schema.json`](schema.json). `/pro
 
 ```bash
 npm install
-npm test
-npm run build
+npm run check
 npm pack --dry-run
 ```
 

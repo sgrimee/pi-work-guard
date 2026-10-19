@@ -8,7 +8,12 @@ import { join, resolve } from "node:path";
 const repositoryRoot = resolve(import.meta.dirname, "..");
 
 function run(command: string, args: string[], cwd: string): void {
-  execFileSync(command, args, { cwd, stdio: "pipe" });
+  execFileSync(command, args, {
+    cwd,
+    stdio: "pipe",
+    // prepack may run under `npm pack --dry-run`; the smoke test needs real artifacts.
+    env: { ...process.env, npm_config_dry_run: "false" },
+  });
 }
 
 test("packed package loads through Pi with production dependencies", () => {

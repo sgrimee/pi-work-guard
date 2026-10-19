@@ -1,6 +1,6 @@
 {
   "name": "pi-work-guard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Best-effort workspace and model-provider policy guard for Pi",
   "type": "module",
   "main": "dist/index.js",
@@ -21,10 +21,13 @@
   "scripts": {
     "build": "tsc",
     "test": "tsx --test test/*.test.ts",
-    "prepack": "npm run build"
+    "check": "npm run build && npm test",
+    "prepack": "npm run check"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "keywords": [
     "pi",
